@@ -1,41 +1,21 @@
-# A simple Dockerfile for building Kvazaar from the git repository
-# Example build command when in this directory: docker build -t kvazaar .
-#
-# Example usage
-# Run with an input YUV file and output HEVC binary file
-#     docker run -i -a STDIN -a STDOUT kvazaar -i - --input-res=320x240 -o - < testfile_320x240.yuv > out.265
-#
-# Use libav or ffmpeg to input (almost) any format and convert it to YUV420 for kvazaar, audio is disabled
-#
-#     RESOLUTION=`avconv -i input.avi 2>&1 | grep Stream | grep -oP ', \K[0-9]+x[0-9]+'`
-#     avconv -i input.avi -an -f rawvideo -pix_fmt yuv420p - | docker run -i -a STDIN -a STDOUT kvazaar -i - --wpp --threads=8 --input-res=$RESOLUTION --preset=ultrafast -o - > output.265
-#  or
-#     RESOLUTION=`ffmpeg -i input.avi 2>&1 | grep Stream | grep -oP ', \K[0-9]+x[0-9]+'`
-#     ffmpeg -i input.avi -an -f rawvideo -pix_fmt yuv420p - | docker run -i -a STDIN -a STDOUT kvazaar -i - --wpp --threads=8 --input-res=$RESOLUTION --preset=ultrafast -o - > output.265
-#
+FROM fuzzers/afl:2.52
 
-# Use Ubuntu 18.04 as a base for now, it's around 88MB
-FROM ubuntu:18.04
+RUN apt-get update
+RUN apt install -y build-essential wget git clang cmake  automake autotools-dev  libtool zlib1g zlib1g-dev libexif-dev \
+    libjpeg-dev m4 yasm pkgconf
+RUN git clone https://github.com/ultravideo/kvazaar.git
+WORKDIR /kvazaar
+RUN ./autogen.sh
+RUN CC=afl-clang ./configure
+RUN make
+RUN make install
+RUN mkdir /yuvCorpus
+RUN wget https://chromium.googlesource.com/chromium/src/+/lkgr/media/test/data/bali_640x360_P420.yuv
+RUN wget https://chromium.googlesource.com/chromium/src/+/lkgr/media/test/data/bear_192x320_270.nv12.yuv
+RUN wget https://chromium.googlesource.com/chromium/src/+/lkgr/media/test/data/bear_320x192.i420.yuv
+RUN mv *.yuv /yuvCorpus
+RUN cp /usr/local/bin/epeg /epeg
+ENV LD_LIBRARY_PATH=/usr/local/lib/
 
-MAINTAINER Marko Viitanen <fador@iki.fi>
-
-# List of needed packages to be able to build kvazaar with autotools
-ENV REQUIRED_PACKAGES automake autoconf libtool m4 build-essential git yasm pkgconf
-
-COPY . kvazaar
-# Run all the commands in one RUN so we don't have any extra history
-# data in the image.
-RUN apt-get update \
-    && apt-get install -y $REQUIRED_PACKAGES \
-    && cd kvazaar \
-    && ./autogen.sh \
-    && ./configure --disable-shared \
-    && make\
-    && make install \
-    && AUTOINSTALLED_PACKAGES=`apt-mark showauto` \
-    && apt-get remove --purge --force-yes -y $REQUIRED_PACKAGES $AUTOINSTALLED_PACKAGES \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/{apt,dpkg,cache,log}/
-
-ENTRYPOINT ["kvazaar"]
-CMD ["--help"]
+ENTRYPOINT ["afl-fuzz", "-i", "/yuvCorpus", "-o", "/yuvOut"]
+CMD ["/usr/local/bin/kvazaar", "--input", "@@", "--output", "out.hevc"]
